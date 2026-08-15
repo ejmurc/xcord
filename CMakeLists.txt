@@ -1,74 +1,81 @@
-cmake_minimum_required(VERSION 3.24)
-project(Discrub
-  VERSION 0.1.0
-  LANGUAGES C)
-
-option(ENABLE_SANITIZERS "Enable sanitizers (ASan, UBSan)" OFF)
-
-if(ENABLE_SANITIZERS AND NOT MSVC)
-  set(SANITIZER_FLAGS "-fsanitize=address,undefined -fno-omit-frame-pointer")
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${SANITIZER_FLAGS}")
-  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${SANITIZER_FLAGS}")
-  message(STATUS "Sanitizers enabled: AddressSanitizer, UndefinedBehaviorSanitizer")
-endif()
-
-set(CMAKE_C_STANDARD 99)
+cmake_minimum_required(VERSION 3.20)
+project(xcord
+  VERSION 0.0.1
+  LANGUAGES C
+)
+set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
-
-if (MSVC)
-    set(WARNING_FLAGS /W4 /permissive-)
-else()
-    set(WARNING_FLAGS -Wall -Wextra -Wpedantic -Wshadow -Wconversion)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Debug CACHE STRING "" FORCE)
 endif()
-
+option(ENABLE_SANITIZERS "Enable sanitizers (ASan, UBSan)" OFF)
+add_library(xcord_options INTERFACE)
+if(MSVC)
+  target_compile_options(xcord_options INTERFACE /W4 /WX)
+  target_compile_options(xcord_options INTERFACE $<$<CONFIG:Release>:/O2>)
+else()
+  target_compile_options(xcord_options INTERFACE -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror)
+  target_compile_options(xcord_options INTERFACE $<$<CONFIG:Release>:-O3>)
+  target_compile_options(xcord_options INTERFACE $<$<CONFIG:Release>:-march=native>)
+  target_compile_options(xcord_options INTERFACE $<$<CONFIG:Release>:-flto>)
+  target_link_options(xcord_options INTERFACE $<$<CONFIG:Release>:-flto>)
+  if(ENABLE_SANITIZERS)
+    target_compile_options(xcord_options INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(xcord_options INTERFACE -fsanitize=address,undefined)
+  endif()
+endif()
+find_package(OpenSSL REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(sodium REQUIRED IMPORTED_TARGET GLOBAL libsodium)
 include(FetchContent)
 FetchContent_Declare(
-  yyjson
-  GIT_REPOSITORY https://github.com/ibireme/yyjson.git
-  GIT_TAG master
+    yyjson
+    GIT_REPOSITORY https://github.com/ibireme/yyjson.git
+    GIT_TAG 0.12.0
 )
+set(YYJSON_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(YYJSON_BUILD_DOCS  OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(yyjson)
-
-find_package(OpenSSL REQUIRED)
-
-add_library(discrub_lib
-  src/openssl_client.c
-  src/credentials.c
-  src/discord_client.c
+add_library(net
+  src/net/ssl.c
+  src/net/http.c
+  src/net/err.c
 )
-target_include_directories(discrub_lib PUBLIC include)
-target_link_libraries(discrub_lib
-  PUBLIC
-  OpenSSL::SSL
-  OpenSSL::Crypto
-  yyjson
+target_include_directories(net PUBLIC src/)
+target_link_libraries(net PUBLIC OpenSSL::SSL OpenSSL::Crypto PRIVATE xcord_options)
+add_library(credentials
+    src/credentials/credentials.c
 )
-target_compile_options(discrub_lib PRIVATE ${WARNING_FLAGS})
-
-add_executable(discrub src/main.c)
-target_link_libraries(discrub PRIVATE discrub_lib)
-target_compile_options(discrub PRIVATE ${WARNING_FLAGS})
-
+target_include_directories(credentials PUBLIC src/)
+target_link_libraries(credentials PUBLIC PkgConfig::sodium PRIVATE xcord_options)
+add_library(common
+  src/common/strbuf.c
+  src/common/base64.c
+  src/common/tty.c
+)
+target_include_directories(common PUBLIC src/)
+target_link_libraries(common PRIVATE xcord_options)
+add_library(discord
+  src/discord/discord.c
+)
+target_include_directories(discord PUBLIC src/)
+target_link_libraries(discord PRIVATE OpenSSL::SSL net common yyjson xcord_options)
+add_executable(main src/main.c)
+target_link_libraries(main PRIVATE discord net common PkgConfig::sodium xcord_options)
 find_program(CLANG_FORMAT clang-format)
 if(CLANG_FORMAT)
   file(GLOB_RECURSE ALL_SOURCE_FILES
     ${CMAKE_SOURCE_DIR}/src/*.c
-    ${CMAKE_SOURCE_DIR}/src/*.h
     ${CMAKE_SOURCE_DIR}/include/*.h
   )
-
   add_custom_target(format
     COMMAND ${CLANG_FORMAT} -i ${ALL_SOURCE_FILES}
-    COMMENT "Running clang-format on source files"
     VERBATIM
   )
-
   add_custom_target(format-check
     COMMAND ${CLANG_FORMAT} --dry-run --Werror ${ALL_SOURCE_FILES}
-    COMMENT "Checking formatting with clang-format"
     VERBATIM
   )
-else()
-  message(WARNING "clang-format not found, format targets will not be available")
 endif()

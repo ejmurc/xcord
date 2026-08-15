@@ -1,129 +1,88 @@
-#include "credentials.h"
-#include "discord_client.h"
-#include "log.h"
-#include "openssl_client.h"
+#include "common/tty.h"
+#include "discord/discord.h"
+#include "net/err.h"
+#include "net/ssl.h"
+#include <openssl/ssl.h>
+#include <sodium.h>
+#include <stdio.h>
+#include <string.h>
 
 int main(void) {
-  const char *appname = "discrub";
-  char *uid = NULL;
-  char *token = NULL;
-  char *credentials_filepath = NULL;
-  LOG_INFOF("App Password (press Enter to skip cache): ");
-  char *app_password = get_password();
-  if (app_password && strlen(app_password) > 0) {
-    credentials_filepath = get_credentials_filepath(appname);
-    if (!credentials_filepath) {
-      LOG_ERR("Failed to get credentials filepath");
-      free(app_password);
-      return 1;
+    if (sodium_init() < 0) {
+        fprintf(stderr, "libsodium failed to initialize");
+        return 1;
     }
-    LOG_INFO("Loading credentials from '%s'", credentials_filepath);
-    char *credentials = load_credentials(credentials_filepath, app_password);
-    if (credentials) {
-      char *uid_str = strtok(credentials, "|");
-      char *token_str = strtok(NULL, "|");
-      if (uid_str && token_str) {
-        uid = strdup(uid_str);
-        token = strdup(token_str);
-        if (!uid || !token) {
-          free(uid);
-          free(token);
-          uid = NULL;
-          token = NULL;
-          LOG_ERR("Failed to allocate memory for credentials");
-        }
-      }
-      free(credentials);
+    SSL_CTX *ctx = ssl_ctx_new();
+    if (!ctx) {
+        fprintf(stderr, "failed to create ssl context: %s\n",
+                net_strerror(net_errno));
+        return 1;
     }
-    if (!token) {
-      LOG_ERR("Failed to load credentials from cache");
-    } else {
-      LOG_OK("Loaded credentials successfully");
+    SSL *ssl = ssl_connect(ctx, "discord.com", 443);
+    if (!ssl) {
+        fprintf(stderr, "failed to connect: %s\n", net_strerror(net_errno));
+        SSL_CTX_free(ctx);
+        return 1;
     }
-  }
-  SSL_CTX *ctx = ssl_ctx_new();
-  if (!ctx) {
-    LOG_ERR("Failed to create SSL context");
-    free(credentials_filepath);
-    free(app_password);
-    return 1;
-  }
-  SSL *ssl = ssl_new(ctx, "discord.com", "443");
-  if (!ssl) {
-    LOG_ERR("Failed to connect to domain");
-    SSL_CTX_free(ctx);
-    free(credentials_filepath);
-    free(app_password);
-    return 1;
-  }
-  LOG_OK("Connected to discord.com:443");
-  if (!token) {
-    LOG_INFO("Trying Discord authentication");
-    LOG_INFOF("Email: ");
-    char *email = get_email();
-    if (!email) {
-      ssl_free(ssl);
-      SSL_CTX_free(ctx);
-      free(credentials_filepath);
-      free(app_password);
-      return 1;
+    char email[256];
+    printf("email: ");
+    fflush(stdout);
+    if (!fgets(email, sizeof(email), stdin)) {
+        return 1;
     }
-    flush_stdin();
-    LOG_INFOF("Password: ");
+    if (!strchr(email, '\n')) {
+        flush_stdin();
+    }
+    email[strcspn(email, "\n")] = '\0';
+    printf("password: ");
     char *password = get_password();
     if (!password) {
-      ssl_free(ssl);
-      SSL_CTX_free(ctx);
-      free(credentials_filepath);
-      free(app_password);
-      return 1;
+        fprintf(stderr, "failed to read password\n");
+        ssl_disconnect(ssl);
+        SSL_CTX_free(ctx);
+        return 1;
     }
-    if (discord_login(ssl, email, password, &uid, &token)) {
-      LOG_ERR("Failed to authenticate with Discord");
-      free(password);
-      ssl_free(ssl);
-      SSL_CTX_free(ctx);
-      free(credentials_filepath);
-      free(app_password);
-      return 1;
-    }
+    DiscordLoginResult login_result;
+    DiscordStatus status = discord_login(ssl, email, password, &login_result);
+    sodium_memzero(password, strlen(password));
     free(password);
-    if (!app_password || strlen(app_password) == 0) {
-      LOG_INFOF("Cache credentials? Enter App Password (press Enter to skip): ");
-      free(app_password);
-      app_password = get_password();
-      if (app_password && strlen(app_password) > 0) {
-        credentials_filepath = get_credentials_filepath(appname);
-        if (!credentials_filepath) {
-          LOG_ERR("Failed to get credentials filepath");
+    if (status == DISCORD_ERR_MFA_REQUIRED) {
+        char code[16];
+        printf("2fa code: ");
+        fflush(stdout);
+        if (!fgets(code, sizeof(code), stdin)) {
+            return 1;
         }
-      }
-    }
-    if (app_password && strlen(app_password) > 0 && credentials_filepath) {
-      const char *credentials_fmt = "%s|%s";
-      int credentials_len = snprintf(NULL, 0, credentials_fmt, uid, token);
-      char *credentials = malloc((size_t)credentials_len + 1);
-      if (!credentials) {
-        LOG_ERR("Failed to allocate memory for credentials");
-      } else {
-        if (snprintf(credentials, (size_t)credentials_len + 1, credentials_fmt, uid, token) !=
-            credentials_len) {
-          LOG_ERR("Failed to format credentials");
-        } else if (save_credentials(credentials_filepath, credentials, app_password)) {
-          LOG_WARN("Failed to cache credentials at '%s'", credentials_filepath);
-        } else {
-          LOG_OK("Credentials cached successfully");
+        if (!strchr(code, '\n')) {
+            flush_stdin();
         }
-        free(credentials);
-      }
+        code[strcspn(code, "\n")] = '\0';
+        DiscordLoginResult mfa_result;
+        status = discord_verify_mfa(ssl, "totp", login_result.mfa_ticket,
+                                    login_result.mfa_login_instance_id, code,
+                                    &mfa_result);
+        discord_login_result_free(&login_result);
+        login_result = mfa_result;
     }
-  }
-  free(credentials_filepath);
-  free(app_password);
-  LOG_INFO("%s %s", token, uid);
-  free(uid);
-  free(token);
-  ssl_free(ssl);
-  SSL_CTX_free(ctx);
-  return 0;
+    if (status != DISCORD_OK) {
+        fprintf(stderr, "login failed, status=%d\n", status);
+        discord_login_result_free(&login_result);
+        ssl_disconnect(ssl);
+        SSL_CTX_free(ctx);
+        return 1;
+    }
+    printf("logged in as user_id=%s\n",
+           login_result.user_id ? login_result.user_id : "(unknown)");
+    DiscordGuildList guilds;
+    if (discord_get_guilds(ssl, login_result.token, &guilds) == DISCORD_OK) {
+        for (size_t i = 0; i < guilds.count; i++) {
+            printf("guild: %s (%s)\n", guilds.items[i].name,
+                   guilds.items[i].id);
+        }
+        discord_guild_list_free(&guilds);
+    }
+    discord_login_result_free(&login_result);
+    ssl_disconnect(ssl);
+    SSL_CTX_free(ctx);
+    return 0;
 }

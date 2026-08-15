@@ -1,0 +1,6 @@
+CompileFlags:
+  CompilationDatabase: build/debug
+  Add: [-ferror-limit=0]
+
+Diagnostics:
+  UnusedIncludes: Strict

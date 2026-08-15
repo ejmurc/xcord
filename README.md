@@ -1,14 +1,14 @@
-# discrub
+# xcord
 
 ## Usage
 
 Build the project:
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
+cmake --preset release
+cmake --build --preset release
 ```
 
-The resulting executable will be available at `build/discrub`.
+The resulting executable will be available at `build/release/main`.
 
 ## Development
 
@@ -16,21 +16,21 @@ The resulting executable will be available at `build/discrub`.
 Debug build:
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
+cmake --preset debug
+cmake --build --preset debug
 ```
 
 Rebuild:
 ```bash
-cmake --build build
+cmake --build --preset debug
 ```
 
 ### Sanitizers
 
 Enable AddressSanitizer and UndefinedBehaviorSanitizer:
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DENABLE_SANITIZERS=ON
-cmake --build build
+cmake --build --preset debug -DENABLE_SANITIZERS=ON
+cmake --build --preset debug
 ```
 
 ### Code Formatting
@@ -38,22 +38,10 @@ This project uses `clang-format` to enforce a consistent coding style.
 
 Format all files:
 ```bash
-cmake --build build --target format
+cmake --build --preset debug --target format
 ```
 
 Check formatting without modifying files:
 ```bash
-cmake --build build --target format-check
-```
-
-### Cleaning
-
-Clean
-```bash
-cmake --build build --target clean
-```
-
-Full Clean
-```bash
-rm -rf build
+cmake --build --preset debug --target format-check
 ```
