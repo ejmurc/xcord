@@ -9,6 +9,7 @@
 #include <direct.h>
 #include <io.h>
 #else
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -172,6 +173,10 @@ char *get_credentials_filepath(const char *appname) {
         return NULL;
     }
     int len = snprintf(NULL, 0, "%s/credentials.enc", dir);
+    if (len < 0) {
+        free(dir);
+        return NULL;
+    }
     char *filepath = malloc((size_t)len + 1);
     if (!filepath) {
         free(dir);
@@ -193,15 +198,20 @@ int save_credentials(const char *filepath, const char *credentials,
     if (!encrypted) {
         return 1;
     }
+#if defined(_WIN32)
     FILE *f = fopen(filepath, "wb");
+#else
+    int fd = open(filepath, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    FILE *f = fd >= 0 ? fdopen(fd, "wb") : NULL;
+    if (fd >= 0 && !f) {
+        close(fd);
+    }
+#endif
     if (!f) {
         sodium_memzero(encrypted, encrypted_len);
         free(encrypted);
         return 1;
     }
-#ifndef _WIN32
-    chmod(filepath, 0600);
-#endif
     if (fwrite(encrypted, 1, encrypted_len, f) != encrypted_len) {
         sodium_memzero(encrypted, encrypted_len);
         free(encrypted);
@@ -227,7 +237,7 @@ char *load_credentials(const char *filepath, const char *password) {
         return NULL;
     }
     long encrypted_len = ftell(f);
-    if (encrypted_len < 0 || (size_t)encrypted_len > SIZE_MAX) {
+    if (encrypted_len < 0) {
         fclose(f);
         return NULL;
     }

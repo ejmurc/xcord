@@ -62,8 +62,14 @@ add_library(discord
 )
 target_include_directories(discord PUBLIC src/)
 target_link_libraries(discord PRIVATE OpenSSL::SSL net common yyjson xcord_options)
-add_executable(main src/main.c)
-target_link_libraries(main PRIVATE discord net common PkgConfig::sodium xcord_options)
+add_executable(main
+  src/main.c
+  src/cli/cli.c
+  src/cli/cmd_login.c
+  src/cli/cmd_whoami.c
+  src/cli/cmd_guilds.c
+)
+target_link_libraries(main PRIVATE discord net common credentials xcord_options)
 find_program(CLANG_FORMAT clang-format)
 if(CLANG_FORMAT)
   file(GLOB_RECURSE ALL_SOURCE_FILES
