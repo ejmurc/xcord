@@ -77,6 +77,7 @@ add_executable(main
   src/cli/cmd_login.c
   src/cli/cmd_whoami.c
   src/cli/cmd_guilds.c
+  src/cli/cmd_logout.c
 )
 target_link_libraries(main PRIVATE discord net common credentials cargs xcord_options)
 find_program(CLANG_FORMAT clang-format)

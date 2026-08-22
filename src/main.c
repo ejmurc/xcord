@@ -4,6 +4,7 @@
 #include "net/ssl.h"
 #include <openssl/ssl.h>
 #include <sodium.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -12,12 +13,14 @@ typedef int (*cmd_fn)(SSL *ssl, int argc, char **argv);
 typedef struct {
     const char *name;
     cmd_fn fn;
+    bool needs_network;
 } cli_command_t;
 
 static const cli_command_t commands[] = {
-    {"login", cmd_login},
-    {"whoami", cmd_whoami},
-    {"guilds", cmd_guilds},
+    {"login", cmd_login, true},
+    {"whoami", cmd_whoami, true},
+    {"guilds", cmd_guilds, true},
+    {"logout", cmd_logout, false},
 };
 
 int main(int argc, char **argv) {
@@ -32,32 +35,40 @@ int main(int argc, char **argv) {
         }
         return 1;
     }
-    cmd_fn fn = NULL;
+    const cli_command_t *matched = NULL;
     for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
         if (strcmp(argv[1], commands[i].name) == 0) {
-            fn = commands[i].fn;
+            matched = &commands[i];
             break;
         }
     }
-    if (!fn) {
+    if (!matched) {
         fprintf(stderr, "unknown command: %s\n", argv[1]);
         return 1;
     }
-    SSL_CTX *ctx = ssl_ctx_new();
-    if (!ctx) {
-        fprintf(stderr, "failed to create ssl context: %s\n",
-                net_strerror(net_errno));
-        return 1;
+    SSL_CTX *ctx = NULL;
+    SSL *ssl = NULL;
+    if (matched->needs_network) {
+        ctx = ssl_ctx_new();
+        if (!ctx) {
+            fprintf(stderr, "failed to create ssl context: %s\n",
+                    net_strerror(net_errno));
+            return 1;
+        }
+        ssl = ssl_connect(ctx, "discord.com", 443);
+        if (!ssl) {
+            fprintf(stderr, "failed to connect: %s\n", net_strerror(net_errno));
+            SSL_CTX_free(ctx);
+            return 1;
+        }
     }
-    SSL *ssl = ssl_connect(ctx, "discord.com", 443);
-    if (!ssl) {
-        fprintf(stderr, "failed to connect: %s\n", net_strerror(net_errno));
-        SSL_CTX_free(ctx);
-        return 1;
-    }
-    int result = fn(ssl, argc - 1, argv + 1);
+    int result = matched->fn(ssl, argc - 1, argv + 1);
     ratelimit_cleanup();
-    ssl_disconnect(ssl);
-    SSL_CTX_free(ctx);
+    if (ssl) {
+        ssl_disconnect(ssl);
+    }
+    if (ctx) {
+        SSL_CTX_free(ctx);
+    }
     return result;
 }

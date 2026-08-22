@@ -21,15 +21,24 @@ static int file_exists(const char *path) {
 #endif
 }
 
+int cli_credentials_exist(void) {
+    char *filepath = get_credentials_filepath(XCORD_APP_NAME);
+    if (!filepath) {
+        return 0;
+    }
+    int exists = file_exists(filepath);
+    free(filepath);
+    return exists;
+}
+
 char *cli_load_token(void) {
+    if (!cli_credentials_exist()) {
+        fprintf(stderr, "not logged in, run `xcord login`\n");
+        return NULL;
+    }
     char *filepath = get_credentials_filepath(XCORD_APP_NAME);
     if (!filepath) {
         fprintf(stderr, "could not resolve credentials path\n");
-        return NULL;
-    }
-    if (!file_exists(filepath)) {
-        fprintf(stderr, "not logged in, run `xcord login`\n");
-        free(filepath);
         return NULL;
     }
     printf("passphrase: ");
