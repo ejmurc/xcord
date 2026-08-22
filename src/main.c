@@ -26,7 +26,10 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (argc < 2) {
-        fprintf(stderr, "usage: xcord <command> [args]\n");
+        fprintf(stderr, "usage: xcord <command> [args]\ncommands:\n");
+        for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+            fprintf(stderr, "  %s\n", commands[i].name);
+        }
         return 1;
     }
     cmd_fn fn = NULL;
@@ -52,7 +55,7 @@ int main(int argc, char **argv) {
         SSL_CTX_free(ctx);
         return 1;
     }
-    int result = fn(ssl, argc - 2, argv + 2);
+    int result = fn(ssl, argc - 1, argv + 1);
     ratelimit_cleanup();
     ssl_disconnect(ssl);
     SSL_CTX_free(ctx);

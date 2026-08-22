@@ -2,6 +2,7 @@
 #include "common/tty.h"
 #include "credentials/credentials.h"
 #include "discord/discord.h"
+#include <cargs.h>
 #include <sodium.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,17 +10,39 @@
 
 #define XCORD_APP_NAME "xcord"
 
-static int prompt_line(const char *label, char *buf, size_t buf_size) {
+static struct cag_option options[] = {{.identifier = 'h',
+                                       .access_letters = "h",
+                                       .access_name = "help",
+                                       .description = "Show this help"}};
+
+static char *prompt_line(const char *label) {
     printf("%s", label);
     fflush(stdout);
-    if (!fgets(buf, (int)buf_size, stdin)) {
-        return -1;
+    size_t cap = 64;
+    size_t len = 0;
+    char *buf = malloc(cap);
+    if (!buf) {
+        return NULL;
     }
-    if (!strchr(buf, '\n')) {
-        flush_stdin();
+    int ch;
+    while ((ch = getchar()) != '\n' && ch != EOF) {
+        if (len + 1 >= cap) {
+            cap *= 2;
+            char *tmp = realloc(buf, cap);
+            if (!tmp) {
+                free(buf);
+                return NULL;
+            }
+            buf = tmp;
+        }
+        buf[len++] = (char)ch;
     }
-    buf[strcspn(buf, "\n")] = '\0';
-    return 0;
+    if (ch == EOF && len == 0) {
+        free(buf);
+        return NULL;
+    }
+    buf[len] = '\0';
+    return buf;
 }
 
 static const char *pick_mfa_method(const DiscordLoginResult *result) {
@@ -36,20 +59,35 @@ static const char *pick_mfa_method(const DiscordLoginResult *result) {
 }
 
 int cmd_login(SSL *ssl, int argc, char **argv) {
-    (void)argc;
-    (void)argv;
-    char email[256];
-    if (prompt_line("email: ", email, sizeof(email)) != 0) {
+    cag_option_context context;
+    cag_option_init(&context, options, CAG_ARRAY_SIZE(options), argc, argv);
+    while (cag_option_fetch(&context)) {
+        switch (cag_option_get_identifier(&context)) {
+        case 'h':
+            printf("Usage: xcord login [OPTION]...\n");
+            printf("Log in to Discord and save an encrypted local token.\n\n");
+            cag_option_print(options, CAG_ARRAY_SIZE(options), stdout);
+            return 0;
+        case '?':
+            cag_option_print_error(&context, stdout);
+            return 1;
+        }
+    }
+    char *email = prompt_line("email: ");
+    if (!email) {
+        fprintf(stderr, "failed to read email\n");
         return 1;
     }
     printf("password: ");
     char *password = get_password();
     if (!password) {
         fprintf(stderr, "failed to read password\n");
+        free(email);
         return 1;
     }
     DiscordLoginResult login_result;
     DiscordStatus status = discord_login(ssl, email, password, &login_result);
+    free(email);
     sodium_memzero(password, strlen(password));
     free(password);
     if (status == DISCORD_ERR_MFA_REQUIRED) {
@@ -61,10 +99,16 @@ int cmd_login(SSL *ssl, int argc, char **argv) {
             discord_login_result_free(&login_result);
             return 1;
         }
-        char code[16];
-        char prompt[32];
-        snprintf(prompt, sizeof(prompt), "%s code: ", method);
-        if (prompt_line(prompt, code, sizeof(code)) != 0) {
+        int label_len = snprintf(NULL, 0, "%s code: ", method);
+        char *label = label_len >= 0 ? malloc((size_t)label_len + 1) : NULL;
+        char *code = NULL;
+        if (label) {
+            snprintf(label, (size_t)label_len + 1, "%s code: ", method);
+            code = prompt_line(label);
+            free(label);
+        }
+        if (!code) {
+            fprintf(stderr, "failed to read mfa code\n");
             discord_login_result_free(&login_result);
             return 1;
         }
@@ -72,6 +116,7 @@ int cmd_login(SSL *ssl, int argc, char **argv) {
         status = discord_verify_mfa(ssl, method, login_result.mfa_ticket,
                                     login_result.mfa_login_instance_id, code,
                                     &mfa_result);
+        free(code);
         discord_login_result_free(&login_result);
         login_result = mfa_result;
     }

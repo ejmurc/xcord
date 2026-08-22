@@ -1,13 +1,31 @@
 #include "cli.h"
 #include "discord/discord.h"
+#include <cargs.h>
 #include <sodium.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+static struct cag_option options[] = {{.identifier = 'h',
+                                       .access_letters = "h",
+                                       .access_name = "help",
+                                       .description = "Show this help"}};
+
 int cmd_whoami(SSL *ssl, int argc, char **argv) {
-    (void)argc;
-    (void)argv;
+    cag_option_context context;
+    cag_option_init(&context, options, CAG_ARRAY_SIZE(options), argc, argv);
+    while (cag_option_fetch(&context)) {
+        switch (cag_option_get_identifier(&context)) {
+        case 'h':
+            printf("Usage: xcord whoami [OPTION]...\n");
+            printf("Show the currently logged in Discord account.\n\n");
+            cag_option_print(options, CAG_ARRAY_SIZE(options), stdout);
+            return 0;
+        case '?':
+            cag_option_print_error(&context, stdout);
+            return 1;
+        }
+    }
     char *token = cli_load_token();
     if (!token) {
         return 1;

@@ -38,6 +38,14 @@ FetchContent_Declare(
 set(YYJSON_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(YYJSON_BUILD_DOCS  OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(yyjson)
+FetchContent_Declare(
+    cargs
+    GIT_REPOSITORY https://github.com/likle/cargs.git
+    GIT_TAG v1.2.0
+)
+set(ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(ENABLE_DEMO OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(cargs)
 add_library(net
   src/net/ssl.c
   src/net/http.c
@@ -70,7 +78,7 @@ add_executable(main
   src/cli/cmd_whoami.c
   src/cli/cmd_guilds.c
 )
-target_link_libraries(main PRIVATE discord net common credentials xcord_options)
+target_link_libraries(main PRIVATE discord net common credentials cargs xcord_options)
 find_program(CLANG_FORMAT clang-format)
 if(CLANG_FORMAT)
   file(GLOB_RECURSE ALL_SOURCE_FILES
