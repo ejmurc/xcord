@@ -1,16 +1,15 @@
 #pragma once
-
 #include <openssl/ssl.h>
 #include <stdbool.h>
-#include <errno.h>
+#include <stddef.h>
 
 typedef struct {
-  const char *hostname;
-  const char *method;
-  const char *path;
-  const char *body;
-  const char *content_type;
-  const char **headers;
+    const char *hostname;
+    const char *method;
+    const char *path;
+    const char *body;
+    const char *content_type;
+    const char **headers;
 } http_request_t;
 
 typedef struct {
@@ -20,6 +19,7 @@ typedef struct {
     long   retry_after_ms;
     long   rl_remaining;
     long   rl_reset_ms;
+    char  *bucket;
     bool   should_close;
 } http_response_t;
 

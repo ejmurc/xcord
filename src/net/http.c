@@ -15,6 +15,7 @@ typedef struct {
     long retry_after_ms;
     long rl_remaining;
     long rl_reset_ms;
+    char *bucket;
     bool close;
     bool chunked;
     long content_len;
@@ -67,23 +68,27 @@ static int ssl_read_some(SSL *ssl, char *buf, int max_len) {
 }
 
 static long parse_long(const char *val, size_t len) {
-    char tmp[32];
-    if (len >= sizeof(tmp)) {
-        len = sizeof(tmp) - 1;
+    char *tmp = malloc(len + 1);
+    if (!tmp) {
+        return -1;
     }
     memcpy(tmp, val, len);
     tmp[len] = '\0';
-    return strtol(tmp, NULL, 10);
+    long result = strtol(tmp, NULL, 10);
+    free(tmp);
+    return result;
 }
 
 static long parse_secs_ms(const char *val, size_t len) {
-    char tmp[32];
-    if (len >= sizeof(tmp)) {
-        len = sizeof(tmp) - 1;
+    char *tmp = malloc(len + 1);
+    if (!tmp) {
+        return -1;
     }
     memcpy(tmp, val, len);
     tmp[len] = '\0';
-    return (long)(strtod(tmp, NULL) * 1000.0);
+    long result = (long)(strtod(tmp, NULL) * 1000.0);
+    free(tmp);
+    return result;
 }
 
 static hdr_info_t parse_headers(const char *hdrs, size_t hdrs_len) {
@@ -92,6 +97,7 @@ static hdr_info_t parse_headers(const char *hdrs, size_t hdrs_len) {
     h.retry_after_ms = -1;
     h.rl_remaining = -1;
     h.rl_reset_ms = -1;
+    h.bucket = NULL;
     h.close = false;
     h.chunked = false;
     h.content_len = -1;
@@ -129,6 +135,16 @@ static hdr_info_t parse_headers(const char *hdrs, size_t hdrs_len) {
                            strncasecmp(name, "X-RateLimit-Reset-After",
                                        name_len) == 0) {
                     h.rl_reset_ms = parse_secs_ms(val, val_len);
+                } else if (name_len == sizeof("X-RateLimit-Bucket") - 1 &&
+                           strncasecmp(name, "X-RateLimit-Bucket", name_len) ==
+                               0) {
+                    char *bucket_copy = malloc(val_len + 1);
+                    if (bucket_copy) {
+                        memcpy(bucket_copy, val, val_len);
+                        bucket_copy[val_len] = '\0';
+                        free(h.bucket);
+                        h.bucket = bucket_copy;
+                    }
                 } else if (name_len == sizeof("Connection") - 1 &&
                            strncasecmp(name, "Connection", name_len) == 0) {
                     h.close = val_len == sizeof("close") - 1 &&
@@ -358,6 +374,7 @@ int http_request(SSL *ssl, const http_request_t *req, http_response_t *resp) {
     hdr_info_t h = parse_headers(buf, hdrs_len);
     if (h.status < 0) {
         net_errno = NET_EHDRS;
+        free(h.bucket);
         free(buf);
         return -1;
     }
@@ -365,6 +382,7 @@ int http_request(SSL *ssl, const http_request_t *req, http_response_t *resp) {
     resp->retry_after_ms = h.retry_after_ms;
     resp->rl_remaining = h.rl_remaining;
     resp->rl_reset_ms = h.rl_reset_ms;
+    resp->bucket = h.bucket;
     resp->should_close = h.close;
     if (h.chunked) {
         size_t chunk_cap = extra > MIN_CHUNK_CAP ? extra : MIN_CHUNK_CAP;

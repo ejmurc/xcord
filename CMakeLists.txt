@@ -42,6 +42,7 @@ add_library(net
   src/net/ssl.c
   src/net/http.c
   src/net/err.c
+  src/net/ratelimit.c
 )
 target_include_directories(net PUBLIC src/)
 target_link_libraries(net PUBLIC OpenSSL::SSL OpenSSL::Crypto PRIVATE xcord_options)

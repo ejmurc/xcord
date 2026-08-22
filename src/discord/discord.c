@@ -2,6 +2,8 @@
 #include "common/base64.h"
 #include "common/strbuf.h"
 #include "net/http.h"
+#include "net/ratelimit.h"
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,25 +34,42 @@ static void resp_free(discord_resp_t *resp) {
     }
     free(resp->http.body);
     resp->http.body = NULL;
+    free(resp->http.bucket);
+    resp->http.bucket = NULL;
 }
 
 static DiscordStatus discord_request(SSL *ssl, const char *token,
                                      const char *method, const char *path,
                                      const char *body, discord_resp_t *resp) {
     memset(resp, 0, sizeof(*resp));
-    char auth_header[512];
-    char super_properties_header[768];
-    const char *headers[7];
-    int header_count = 0;
     char *super_properties_b64 =
         base64_encode((const unsigned char *)super_properties_json,
                       strlen(super_properties_json));
     if (!super_properties_b64) {
         return DISCORD_ERR_JSON;
     }
-    snprintf(super_properties_header, sizeof(super_properties_header),
-             "X-Super-Properties: %s", super_properties_b64);
+    size_t sp_header_len =
+        strlen("X-Super-Properties: ") + strlen(super_properties_b64) + 1;
+    char *super_properties_header = malloc(sp_header_len);
+    if (!super_properties_header) {
+        free(super_properties_b64);
+        return DISCORD_ERR_JSON;
+    }
+    snprintf(super_properties_header, sp_header_len, "X-Super-Properties: %s",
+             super_properties_b64);
     free(super_properties_b64);
+    char *auth_header = NULL;
+    if (token) {
+        size_t auth_header_len = strlen("Authorization: ") + strlen(token) + 1;
+        auth_header = malloc(auth_header_len);
+        if (!auth_header) {
+            free(super_properties_header);
+            return DISCORD_ERR_JSON;
+        }
+        snprintf(auth_header, auth_header_len, "Authorization: %s", token);
+    }
+    const char *headers[7];
+    int header_count = 0;
     headers[header_count++] = "Accept: application/json";
     headers[header_count++] = "Accept-Language: en-US,en;q=0.9";
     headers[header_count++] =
@@ -58,8 +77,7 @@ static DiscordStatus discord_request(SSL *ssl, const char *token,
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
     headers[header_count++] = "X-Discord-Locale: en-US";
     headers[header_count++] = super_properties_header;
-    if (token) {
-        snprintf(auth_header, sizeof(auth_header), "Authorization: %s", token);
+    if (auth_header) {
         headers[header_count++] = auth_header;
     }
     headers[header_count] = NULL;
@@ -70,9 +88,14 @@ static DiscordStatus discord_request(SSL *ssl, const char *token,
     req.body = body;
     req.content_type = body ? "application/json" : NULL;
     req.headers = headers;
-    if (http_request(ssl, &req, &resp->http) != 0) {
+    ratelimit_wait(method, path);
+    int rc = http_request(ssl, &req, &resp->http);
+    free(super_properties_header);
+    free(auth_header);
+    if (rc != 0) {
         return DISCORD_ERR_TRANSPORT;
     }
+    ratelimit_update(method, path, &resp->http);
     if (resp->http.body && resp->http.body_len > 0) {
         resp->doc = yyjson_read(resp->http.body, resp->http.body_len, 0);
         if (resp->doc) {
@@ -160,6 +183,24 @@ static int append_query_param(strbuf_t *buf, bool *first, const char *key,
     }
     *first = false;
     return 0;
+}
+
+static char *build_path(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    int needed = vsnprintf(NULL, 0, fmt, args);
+    va_end(args);
+    if (needed < 0) {
+        return NULL;
+    }
+    char *out = malloc((size_t)needed + 1);
+    if (!out) {
+        return NULL;
+    }
+    va_start(args, fmt);
+    vsnprintf(out, (size_t)needed + 1, fmt, args);
+    va_end(args);
+    return out;
 }
 
 static int build_search_path(strbuf_t *buf, const char *base_path,
@@ -263,10 +304,13 @@ DiscordStatus discord_get_current_version(SSL *ssl, const char *branch,
         strcmp(branch, "stable") != 0) {
         return DISCORD_ERR_HTTP;
     }
-    char path[64];
-    snprintf(path, sizeof(path), "/api/updates/%s?platform=linux", branch);
+    char *path = build_path("/api/updates/%s?platform=linux", branch);
+    if (!path) {
+        return DISCORD_ERR_JSON;
+    }
     discord_resp_t resp;
     DiscordStatus status = discord_request(ssl, NULL, "GET", path, NULL, &resp);
+    free(path);
     if (status != DISCORD_OK) {
         resp_free(&resp);
         return status;
@@ -352,11 +396,15 @@ DiscordStatus discord_verify_mfa(SSL *ssl, const char *authenticator_type,
         strbuf_free(&buf);
         return DISCORD_ERR_JSON;
     }
-    char path[128];
-    snprintf(path, sizeof(path), "/api/v10/auth/mfa/%s", authenticator_type);
+    char *path = build_path("/api/v10/auth/mfa/%s", authenticator_type);
+    if (!path) {
+        strbuf_free(&buf);
+        return DISCORD_ERR_JSON;
+    }
     discord_resp_t resp;
     DiscordStatus status =
         discord_request(ssl, NULL, "POST", path, buf.data, &resp);
+    free(path);
     strbuf_free(&buf);
     if (status == DISCORD_ERR_TRANSPORT) {
         return status;
@@ -443,11 +491,14 @@ DiscordStatus discord_get_guild_channels(SSL *ssl, const char *token,
         return DISCORD_ERR_HTTP;
     }
     memset(out_list, 0, sizeof(*out_list));
-    char path[96];
-    snprintf(path, sizeof(path), "/api/v10/guilds/%s/channels", guild_id);
+    char *path = build_path("/api/v10/guilds/%s/channels", guild_id);
+    if (!path) {
+        return DISCORD_ERR_JSON;
+    }
     discord_resp_t resp;
     DiscordStatus status =
         discord_request(ssl, token, "GET", path, NULL, &resp);
+    free(path);
     if (status != DISCORD_OK) {
         resp_free(&resp);
         return status;
@@ -538,10 +589,15 @@ DiscordStatus discord_search_guild_messages(SSL *ssl, const char *token,
     }
     strbuf_t path_buf = {0};
     path_buf.data = malloc(0);
-    char base_path[96];
-    snprintf(base_path, sizeof(base_path), "/api/v10/guilds/%s/messages/search",
-             guild_id);
-    if (build_search_path(&path_buf, base_path, params, true) < 0) {
+    char *base_path =
+        build_path("/api/v10/guilds/%s/messages/search", guild_id);
+    if (!base_path) {
+        strbuf_free(&path_buf);
+        return DISCORD_ERR_JSON;
+    }
+    int build_status = build_search_path(&path_buf, base_path, params, true);
+    free(base_path);
+    if (build_status < 0) {
         strbuf_free(&path_buf);
         return DISCORD_ERR_JSON;
     }
@@ -585,10 +641,15 @@ DiscordStatus discord_search_channel_messages(SSL *ssl, const char *token,
     }
     strbuf_t path_buf = {0};
     path_buf.data = malloc(0);
-    char base_path[96];
-    snprintf(base_path, sizeof(base_path),
-             "/api/v10/channels/%s/messages/search", channel_id);
-    if (build_search_path(&path_buf, base_path, params, false) < 0) {
+    char *base_path =
+        build_path("/api/v10/channels/%s/messages/search", channel_id);
+    if (!base_path) {
+        strbuf_free(&path_buf);
+        return DISCORD_ERR_JSON;
+    }
+    int build_status = build_search_path(&path_buf, base_path, params, false);
+    free(base_path);
+    if (build_status < 0) {
         strbuf_free(&path_buf);
         return DISCORD_ERR_JSON;
     }
@@ -624,12 +685,15 @@ DiscordStatus discord_delete_message(SSL *ssl, const char *token,
     if (!ssl || !token || !channel_id || !message_id) {
         return DISCORD_ERR_HTTP;
     }
-    char path[160];
-    snprintf(path, sizeof(path), "/api/v10/channels/%s/messages/%s", channel_id,
-             message_id);
+    char *path =
+        build_path("/api/v10/channels/%s/messages/%s", channel_id, message_id);
+    if (!path) {
+        return DISCORD_ERR_JSON;
+    }
     discord_resp_t resp;
     DiscordStatus status =
         discord_request(ssl, token, "DELETE", path, NULL, &resp);
+    free(path);
     resp_free(&resp);
     return status;
 }

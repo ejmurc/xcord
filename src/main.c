@@ -1,5 +1,6 @@
 #include "cli/cli.h"
 #include "net/err.h"
+#include "net/ratelimit.h"
 #include "net/ssl.h"
 #include <openssl/ssl.h>
 #include <sodium.h>
@@ -52,6 +53,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     int result = fn(ssl, argc - 2, argv + 2);
+    ratelimit_cleanup();
     ssl_disconnect(ssl);
     SSL_CTX_free(ctx);
     return result;
